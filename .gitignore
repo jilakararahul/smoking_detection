@@ -1,0 +1,51 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Dataset (too large for GitHub) ───────────────────────────────────────────
+data/
+*.zip
+
+# ── YOLO base pretrained weights (auto-downloaded by Ultralytics) ─────────────
+yolo11n.pt
+yolo11s.pt
+yolo11m.pt
+yolo11l.pt
+yolo11x.pt
+yolo12*.pt
+# Keep models/best.pt — our trained weights are tracked intentionally
+
+# ── Training run outputs ──────────────────────────────────────────────────────
+runs/
+
+# ── Runtime directories ───────────────────────────────────────────────────────
+screenshots/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── OS / Editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/

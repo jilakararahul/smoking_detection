@@ -1,0 +1,608 @@
+Technical Summary — Smoking Detection System (YOLOv11 Dissertation Project)
+
+
+
+---
+
+
+
+1. Project Objective
+
+
+
+The goal was to build a real-time smoking detection system capable of identifying cigarettes in images and live video using a custom-trained object detection model. The system needed to be robust enough to distinguish actual cigarettes from visually similar objects (pens, pencils, straws) which was the primary practical challenge throughout the project.
+
+
+
+
+---
+
+
+
+2. Dataset Collection
+
+
+
+Four datasets were collected and eventually merged into one unified training set:
+
+
+
+
+| Dataset | Images | Source / Description |
+
+|---|---|---|
+
+| Smoking (cigarettes) | 5,786 | Primary dataset — cigarettes, smoke, person, vape classes from Roboflow |
+
+| Straw images | 615 | Custom collected — used as negative examples |
+
+| Pen dataset v1 | 667 | Custom collected — pen/pencil images |
+
+| Pen dataset v2 | 148 | Additional pen variation images |
+
+| Total raw | 7,216 | Before split and deduplication |
+
+
+
+
+After merging, splitting, and cleaning, the final dataset had:
+
+Training set: 3,478 images (60 background/empty images, 5,132 cigarette annotations + 2,296 cigarette-like object annotations)
+Validation set: 920 images (84 background images, 1,097 total annotations)
+Test set: empty (all evaluation done on validation split)
+
+
+
+---
+
+
+
+3. Experiment Phase 1 — YOLOv11s on Cigarette-Only Dataset (train_yolov11.ipynb)
+
+
+
+Motivation: Establish a baseline using a publicly available smoking/cigarette dataset from Roboflow before incorporating custom data.
+
+
+
+
+Dataset: Roboflow smoking-tasfx-7knuj project — 5-class detection:
+
+Cigarette, Person, Smoke, Vape, smoking
+
+
+
+Configuration:
+
+
+
+
+| Parameter | Value |
+
+|---|---|
+
+| Model | YOLOv11s (9.41M parameters, 21.3 GFLOPs) |
+
+| Pretrained weights | COCO |
+
+| Epochs | 50 |
+
+| Image size | 320 × 320 |
+
+| Batch size | 16 |
+
+| Optimizer | SGD (default) |
+
+| GPU | Tesla T4 (15 GB VRAM) |
+
+| Training time | ~0.057 hours (~3.4 minutes) |
+
+
+
+
+Results (internal validation — best.pt):
+
+
+
+
+| Metric | Value |
+
+|---|---|
+
+| mAP@50 | 82.6% |
+
+| mAP@50-95 | 38.9% |
+
+| Precision | 81.9% |
+
+| Recall | 77.4% |
+
+| Inference speed | 1.9 ms/image |
+
+
+
+
+Roboflow external evaluation (independent test set):
+
+
+
+
+| Metric | Value |
+
+|---|---|
+
+| mAP@50 | 72.1% |
+
+| Precision | 84.8% |
+
+| Recall | 68.6% |
+
+| F1 Score | 75.9% |
+
+
+
+
+Per-class mAP@50 (Roboflow):
+
+
+
+
+| Class | mAP@50 |
+
+|---|---|
+
+| Cigarette | 80% |
+
+| Person | 93% |
+
+| Smoke | 56% |
+
+| Vape | 36% |
+
+| Smoking | 88% |
+
+
+
+
+Key Problem Identified: While accuracy was acceptable on the standard dataset, live camera testing revealed a critical failure — the model was consistently misclassifying pens, pencils, and straws as cigarettes. This was expected because the training data contained no negative examples of thin elongated objects. The model had learned visual features (thin cylindrical shape, held in hand) that are shared between cigarettes and many everyday objects.
+
+
+
+
+---
+
+
+
+4. Experiment Phase 2 — YOLOv12s Comparison (train_yolov12.ipynb)
+
+
+
+Motivation: Evaluate whether the newer YOLOv12 architecture, which introduces an attention mechanism (A2C2f blocks replacing standard C3k2 blocks), would improve detection quality on the same dataset.
+
+
+
+
+Architecture difference: YOLOv12 uses area-attention in its C2f blocks, enabling the model to focus on larger receptive fields — theoretically better for detecting thin, elongated objects like cigarettes.
+
+
+
+
+Configuration:
+
+
+
+
+| Parameter | Value |
+
+|---|---|
+
+| Model | YOLOv12s (9.1M parameters, 19.6 GFLOPs) |
+
+| Epochs | 50 |
+
+| Image size | 320 × 320 |
+
+| Batch size | 16 |
+
+| Optimizer | AdamW (auto-tuned, lr=0.001111, momentum=0.9) |
+
+| GPU | Tesla T4 (15 GB VRAM) |
+
+
+
+
+Results (internal validation):
+
+
+
+
+| Metric | Value |
+
+|---|---|
+
+| mAP@50 | 66.0% |
+
+| mAP@50-95 | 43.7% |
+
+| Precision | 79.7% |
+
+| Recall | 63.6% |
+
+
+
+
+Per-class mAP@50:
+
+
+
+
+| Class | mAP@50 |
+
+|---|---|
+
+| Cigarette | 37.5% |
+
+| Person | 73.4% |
+
+| Smoke | 26.9% |
+
+| Vape | 35.8% |
+
+| Smoking | 44.8% |
+
+
+
+
+Roboflow external evaluation:
+
+
+
+
+| Metric | Value |
+
+|---|---|
+
+| mAP@50 | 70.6% |
+
+| Precision | 82.2% |
+
+| Recall | 65.1% |
+
+| F1 Score | 72.7% |
+
+
+
+
+Conclusion: YOLOv12s performed marginally worse than YOLOv11s on this dataset (70.6% vs 72.1% external mAP). The attention mechanism did not provide a measurable advantage at this scale and image resolution. YOLOv11s was chosen as the base architecture going forward. The false positive problem on pen/straw objects remained unsolved at this stage — requiring a dataset-level fix rather than an architecture change.
+
+
+
+
+---
+
+
+
+5. Experiment Phase 3 — Multi-Class Merged Dataset (Intermediate)
+
+
+
+Motivation: Directly address the false positive problem by introducing negative class examples. The pen and straw datasets were merged with the cigarette dataset, creating a multi-class problem where the model would learn to distinguish cigarettes from visually similar objects.
+
+
+
+
+Approach: All four datasets merged. Classes included cigarette-related classes plus pen/pencil/straw as separate classes.
+
+
+
+
+Result: mAP@50 dropped to approximately 50%. The model struggled with the increased class imbalance (5,786 smoking images vs 615 straw + 667+148 pen images). The minority negative classes were underrepresented and the model's confidence on the main cigarette class degraded significantly.
+
+
+
+
+Decision: Simplify the class structure rather than maintaining fine-grained negative classes.
+
+
+
+
+---
+
+
+
+6. Experiment Phase 4 — YOLOv11s 2-Class Merged Dataset — Final Model (Yolo11s.ipynb, run: smoking_v3_2class)
+
+
+
+Motivation: The core insight was that for the application's purpose, precise sub-class distinctions within negative examples were unnecessary. Instead of separate pen/straw/pencil classes, all non-cigarette elongated objects were collapsed into a single cigarette_like_object class. This maintains the model's ability to distinguish real cigarettes from similar objects while greatly simplifying the learning problem.
+
+
+
+
+Label Remapping Logic:
+
+PLAINTEXT
+Original class 0 (cigarette)          → Class 0: cigarette
+Original class 1 (smoking/person)     → Class 0: cigarette  
+Original class 2 (cigarette-like)     → Class 1: cigarette_like_object
+Pens, straws, pencils                 → Class 1: cigarette_like_object
+
+Total files remapped: 6,801 label files (5,881 train + 920 valid)
+
+
+
+
+Final annotation distribution (training set):
+
+cigarette: 5,132 annotations (~69%)
+cigarette_like_object: 2,296 annotations (~31%)
+
+
+
+Training Configuration:
+
+
+
+
+| Parameter | Value |
+
+|---|---|
+
+| Model | YOLOv11s (9,428,566 parameters, 21.6 GFLOPs) |
+
+| Pretrained weights | COCO (transferred 493/499 layers) |
+
+| Epochs configured | 150 |
+
+| Epochs actually run | 148 (early stopped, best at epoch 118) |
+
+| Image size | 640 × 640 |
+
+| Batch size | 16 |
+
+| Optimizer | AdamW |
+
+| Learning rate (lr0) | 0.001 |
+
+| LR final (lrf) | 0.01 |
+
+| LR schedule | Cosine annealing |
+
+| Warmup epochs | 5 |
+
+| Weight decay | 0.0005 |
+
+| Early stopping patience | 30 epochs |
+
+| Classification loss weight (cls) | 0.7 |
+
+| GPU | NVIDIA L4 (22,563 MB VRAM) |
+
+| Training time | 1.782 hours |
+
+| AMP (mixed precision) | Yes |
+
+
+
+
+Data Augmentation:
+
+
+
+
+| Augmentation | Value |
+
+|---|---|
+
+| HSV hue shift | 0.015 |
+
+| HSV saturation | 0.7 |
+
+| HSV value | 0.4 |
+
+| Horizontal flip | 0.5 |
+
+| Mosaic | 1.0 |
+
+| Mixup | 0.15 |
+
+| Random erasing | 0.4 |
+
+| Scale | 0.5 |
+
+| Albumentations | Blur, MedianBlur, ToGray, CLAHE (all p=0.01) |
+
+
+
+
+Training Convergence:
+
+
+
+
+| Epoch | mAP@50 | Precision | Recall |
+
+|---|---|---|---|
+
+| 1 | 0.249 | 0.384 | 0.277 |
+
+| 2 | 0.259 | 0.345 | 0.316 |
+
+| 3 | 0.266 | 0.402 | 0.307 |
+
+| ~50 | ~0.55 | ~0.75 | ~0.55 |
+
+| ~100 | ~0.63 | ~0.80 | ~0.60 |
+
+| 118 (best) | 0.662 | 0.825 | 0.612 |
+
+| 148 (final) | 0.649 | 0.824 | 0.602 |
+
+
+
+
+Final Results — Best Model (best.pt, epoch 118):
+
+
+
+
+| Metric | All Classes | Cigarette | Cigarette-like Object |
+
+|---|---|---|---|
+
+| mAP@50 | 66.2% | 78.4% | 54.1% |
+
+| mAP@50-95 | 41.6% | 44.9% | 38.4% |
+
+| Precision | 82.5% | 81.7% | 83.4% |
+
+| Recall | 61.2% | 73.6% | 48.8% |
+
+
+
+
+Inference speed: 0.1ms preprocess + 2.4ms inference + 1.0ms postprocess = ~3.5ms per image on NVIDIA L4
+
+
+
+
+Model file size: 19.2 MB (optimizer stripped)
+
+
+
+
+Key improvement over Phase 1: The false positive problem on live camera was substantially resolved — the model now correctly flags pens/straws/pencils as cigarette_like_object rather than cigarette, which is the intended behaviour for the application.
+
+
+
+
+---
+
+
+
+7. Attempted Experiment — YOLOv11m (Yolo11m.ipynb)
+
+
+
+Motivation: Test whether the medium-sized model (38.8 MB, ~2x parameters of small) would yield higher accuracy on the same 2-class dataset using the more powerful NVIDIA L4 GPU.
+
+
+
+
+Outcome: Training failed before starting due to a Google Colab dataset path error — the valid/images directory was not found at the expected Google Drive mount path. This was a path configuration issue, not a model or dataset problem. The run was not recovered and YOLOv11s (smoking_v3_2class) remained the best available trained model.
+
+
+
+
+---
+
+
+
+8. Model Comparison Summary
+
+
+
+| Experiment | Model | Classes | Dataset | Epochs | mAP@50 (val) | mAP@50 (ext.) | False Positives on Live Cam |
+
+|---|---|---|---|---|---|---|---|
+
+| Phase 1 | YOLOv11s | 5 | Roboflow only | 50 | 82.6% | 72.1% | High (pens/straws) |
+
+| Phase 2 | YOLOv12s | 5 | Roboflow only | 50 | 66.0% | 70.6% | High (pens/straws) |
+
+| Phase 3 | YOLOv11s | Multi | Merged | — | ~50% | — | Reduced |
+
+| Phase 4 | YOLOv11s | 2 | Merged | 148 | 66.2% | — | Low (classified correctly) |
+
+| Phase 4 (attempted) | YOLOv11m | 2 | Merged | Failed | — | — | — |
+
+
+
+
+Selected model: Phase 4 — smoking_v3_2class/weights/best.pt (YOLOv11s, 2-class, epoch 118)
+
+
+
+
+---
+
+
+
+9. Application Development
+
+
+
+A professional Streamlit web application was built on top of the trained model with the following architecture:
+
+
+
+PLAINTEXT
+project/
+├── app.py                  ← Streamlit front-end
+├── utils/
+│   ├── detector.py         ← YOLOv11s inference wrapper (SmokingDetector class)
+│   └── camera_stream.py    ← Background MJPEG streaming server
+├── models/
+│   └── best.pt             ← Trained weights (downloaded from Google Drive)
+├── .streamlit/
+│   └── config.toml         ← Dark theme configuration
+└── requirements.txt
+
+
+
+Application Features:
+
+
+
+
+Image Upload Mode:
+
+Upload any JPG/PNG image
+Side-by-side display of original vs annotated image
+Detection count cards (total / cigarettes / cigarette-like)
+Alert banner when cigarette is detected
+Per-detection table with class, confidence, and bounding box coordinates
+Download annotated image button
+
+
+
+Live Camera Mode:
+
+Uses OpenCV on the Python/server side — avoids all browser camera permission issues and HTTPS requirements
+Architecture: two background threads — one for OpenCV capture + YOLO inference, one as an MJPEG HTTP server (port 8765)
+Browser embeds the stream via a plain  tag — smooth ~25–30 fps, no page rerenders
+Real-time overlay showing cigarette count, cig-like count, and active confidence threshold
+Start/Stop controls and camera index selector
+
+
+
+Technical solution to browser camera access problem: Browser navigator.mediaDevices requires HTTPS. Rather than setting up SSL certificates, the camera is captured directly by Python (OpenCV) on the local machine. The annotated frames are served as MJPEG over a plain HTTP server running on localhost, which the browser loads as a regular image — completely bypassing all browser security restrictions.
+
+
+
+
+---
+
+
+
+10. Key Technical Decisions and Rationale
+
+
+
+| Decision | Rationale |
+
+|---|---|
+
+| YOLOv11s over YOLOv11m | Medium model failed to train; small model sufficient for 2-class problem |
+
+| YOLOv11s over YOLOv12s | YOLOv11s outperformed YOLOv12s on external test (72.1% vs 70.6%) |
+
+| 2-class over multi-class | Simplified label structure recovered ~15% mAP while solving real-world false positive problem |
+
+| 640px over 320px input | Higher resolution critical for detecting thin objects like cigarettes at distance |
+
+| AdamW + cosine LR | More stable convergence than SGD for fine-grained 2-class problem |
+
+| MJPEG over WebRTC | Eliminates HTTPS requirement; works on any HTTP address; simpler deployment |
+
+| Confidence threshold 0.40 | Balances precision/recall for real-world camera conditions |
