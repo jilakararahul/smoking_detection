@@ -24,6 +24,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
+from utils.alerts import SMSAlerter
 from utils.camera_stream import CameraStream
 from utils.detector import (
     CLASS_COLORS_RGB,
@@ -204,7 +205,43 @@ with st.sidebar:
         )
 
     st.markdown("---")
+    st.markdown("### SMS Alerts")
+    sms_enabled = st.toggle("Enable SMS alerts", value=False)
+    sms_number  = ""
+    if sms_enabled:
+        sms_number = st.text_input(
+            "Alert phone number",
+            placeholder="+447700900000",
+            help="International format. Requires Twilio credentials in .streamlit/secrets.toml",
+        )
+        st.caption("Alert sent when a cigarette is detected (30 s cooldown).")
+
+    st.markdown("---")
     st.caption("YOLOv11s · 2-class · 150 epochs  \nDataset: merged cigarette + pen/straw")
+
+
+# ---------------------------------------------------------------------------
+# Helper: SMS alerter (one per session)
+# ---------------------------------------------------------------------------
+def maybe_send_sms(detections: list, source: str) -> None:
+    """Fire an SMS alert if cigarettes were found and SMS is configured."""
+    if not sms_enabled or not sms_number:
+        return
+    cig_count = sum(1 for d in detections if d.class_id == 0)
+    if cig_count == 0:
+        return
+    key = "sms_alerter"
+    if key not in st.session_state or st.session_state[key].to_number != sms_number:
+        st.session_state[key] = SMSAlerter(to_number=sms_number)
+    alerter: SMSAlerter = st.session_state[key]
+    try:
+        sent = alerter.send(
+            f"Smoking Detection Alert: {cig_count} cigarette(s) detected in {source}."
+        )
+        if sent:
+            st.toast("SMS alert sent.", icon="📱")
+    except RuntimeError as e:
+        st.warning(f"SMS not sent: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +388,7 @@ with tab_image:
 
         st.markdown("---")
         render_summary(detections)
+        maybe_send_sms(detections, source=f"uploaded image ({uploaded.name})")
 
         # Download annotated image
         ann_pil = Image.fromarray(ann_rgb)
@@ -399,7 +437,16 @@ with tab_camera:
                 disabled=stream.running,
                 use_container_width=True,
             ):
-                ok = stream.start(int(cam_index), detector_cam)
+                # Build SMS callback for the live stream background thread
+                _sms_cb = None
+                if sms_enabled and sms_number:
+                    _alerter = SMSAlerter(to_number=sms_number)
+                    def _sms_cb(n, _a=_alerter, _num=sms_number):
+                        try:
+                            _a.send(f"Smoking Detection Alert: {n} cigarette(s) detected in live camera feed.")
+                        except Exception:
+                            pass
+                ok = stream.start(int(cam_index), detector_cam, on_cigarette=_sms_cb)
                 if not ok:
                     st.error(f"Could not open camera index {int(cam_index)}.")
                 st.rerun()

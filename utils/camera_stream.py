@@ -40,7 +40,7 @@ class CameraStream:
     def running(self) -> bool:
         return self._running
 
-    def start(self, cam_index: int, detector) -> bool:
+    def start(self, cam_index: int, detector, on_cigarette=None) -> bool:
         """
         Start the camera capture and MJPEG server.
         Returns False if the camera could not be opened.
@@ -55,7 +55,8 @@ class CameraStream:
             return False
         probe.release()
 
-        self._detector = detector
+        self._detector    = detector
+        self._on_cigarette = on_cigarette  # callable(n_cigs) or None
         self._running = True
 
         self._cam_thread = threading.Thread(
@@ -100,6 +101,14 @@ class CameraStream:
             # Overlay counters on the frame
             n_cig  = sum(1 for d in dets if d.class_id == 0)
             n_like = sum(1 for d in dets if d.class_id == 1)
+
+            # Fire alert callback (runs in background thread — keep it fast)
+            if n_cig > 0 and self._on_cigarette is not None:
+                try:
+                    self._on_cigarette(n_cig)
+                except Exception:
+                    pass
+
             lines = [
                 f"Cigarettes : {n_cig}",
                 f"Cig-like   : {n_like}",

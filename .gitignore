@@ -47,5 +47,8 @@ desktop.ini
 *.swp
 *.swo
 
+# ── Streamlit secrets (never commit real credentials) ─────────────────────────
+.streamlit/secrets.toml
+
 # ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/
