@@ -1,0 +1,116 @@
+1. Sustained Detection — SMS Alert Logic
+
+
+
+Problem: The original alert fired on the very first frame a cigarette appeared — someone could briefly take out a cigarette and put it back and it would trigger.
+
+
+
+
+First fix (earlier session): Added SustainedDetectionTracker — required the cigarette to be continuously present for 30 seconds. But this was too strict: one missed frame reset the entire timer.
+
+
+
+
+Final fix (this session): Replaced with SlidingWindowTracker in utils/alerts.py:
+
+Maintains a 15-second rolling window of per-frame detection events
+Fires the SMS alert once when cigarette is detected in ≥ 50% of frames within that window
+Brief disappearances (head turn, occlusion, person moving) do NOT reset the window — they only reduce the ratio slightly
+Alert resets only after cigarette has been mostly absent for a full 15 seconds (ratio < 15%), so a new future event can trigger again
+
+
+
+---
+
+
+
+2. Live Feed Smoothness — 3-Thread Architecture
+
+
+
+Problem: The live camera feed was choppy and fluctuating. Root cause: YOLO inference (100–300ms on CPU) was blocking the capture loop, so the stream only ran at 5–10fps unevenly.
+
+
+
+
+Fix: Refactored utils/camera_stream.py from 2 threads to 3 fully decoupled threads:
+
+
+
+
+| Thread | Role | Speed |
+
+|--------|------|-------|
+
+| Capture | Reads raw frames from webcam, draws last known bboxes, encodes JPEG → buffer | ~30 fps (camera speed) |
+
+| Inference | Picks up latest raw frame, runs YOLO, updates detection cache | ~5–15 fps (model speed) |
+
+| Server | Serves JPEG buffer as MJPEG stream to browser | ~30 fps |
+
+
+
+
+The video stream now runs at full camera FPS regardless of inference speed. Bounding boxes lag by one inference cycle (~60–200ms) which is imperceptible to the viewer.
+
+
+
+
+The live feed overlay also shows a real-time detection ratio (Det ratio: 34% / 15s window) so the sustained detection progress is visible.
+
+
+
+
+---
+
+
+
+3. Twilio SMS Integration — Installed & Configured
+
+
+Installed twilio package in the dedicated .venv virtual environment
+Diagnosed and resolved two configuration errors:
+Account SID was prefixed US… instead of the correct AC…
+from_number was set to a personal number instead of the Twilio-issued number
+SMS alerts now send correctly when the sliding window threshold is crossed
+
+
+
+---
+
+
+
+4. Virtual Environment
+
+
+
+Created a clean .venv virtual environment and installed all project dependencies from requirements.txt into it, isolating the project from system Python packages.
+
+
+
+
+Run the app going forward with:
+
+BASH
+.venv\Scripts\streamlit run app.py
+
+
+
+---
+
+
+
+Key Files Modified
+
+
+
+| File | Change |
+
+|------|--------|
+
+| utils/alerts.py | Replaced SustainedDetectionTracker with SlidingWindowTracker (sliding window, ratio-based) |
+
+| utils/camera_stream.py | Full 3-thread refactor: decoupled capture, inference, and MJPEG server |
+
+| notebooks/05_yolov11s_vs_yolov12s_comparison.ipynb | Rebuilt to compare both models on the merged 2-class dataset (Phase 4) — YOLOv12 placeholders ready to fill once training completes |
