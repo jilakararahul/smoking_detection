@@ -1,15 +1,11 @@
 """
 Smoking Detection — Streamlit Web Application
-=============================================
-Real-time cigarette and cigarette-like object detection using YOLOv11s.
 
-Modes
------
-  Image Upload  : Upload a JPG/PNG image and get annotated results.
-  Live Camera   : Capture webcam frames in the browser and run detection on each shot.
+Two modes:
+  Image Upload : Upload a JPG/PNG image and get annotated detection results.
+  Live Camera  : Real-time webcam feed with YOLO detection overlay.
 
-Run
----
+Run:
     streamlit run app.py
 """
 

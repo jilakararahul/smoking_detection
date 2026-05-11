@@ -1,22 +1,14 @@
 """
-Background MJPEG camera stream with embedded YOLO detection.
+Background MJPEG camera stream with YOLO detection.
 
-Architecture (3 threads)
-------------------------
-  Thread 1 — Capture  : reads raw frames from webcam at full camera FPS (~30 fps)
-                         draws the *last known* bounding boxes on each frame
-                         encodes to JPEG → shared buffer
-  Thread 2 — Inference : picks up the latest raw frame, runs YOLO, stores detections
-                         runs at whatever speed the model allows (CPU: ~5-15 fps)
-  Thread 3 — Server    : HTTPServer streams JPEG buffer as MJPEG to the browser
+Three daemon threads run in parallel:
+  Thread 1 — Capture   : reads frames from webcam at full camera FPS, draws
+                          last-known bboxes, encodes to JPEG
+  Thread 2 — Inference : runs YOLO on the latest raw frame, updates detections
+  Thread 3 — Server    : serves JPEG buffer as MJPEG over HTTP
 
-Decoupling capture from inference means the video is always smooth even when
-YOLO is slow. Bounding boxes lag by one inference cycle (~60-200 ms) but the
-video itself never stutters.
-
-SMS alerts use SlidingWindowTracker — fires once if cigarette is detected in
-≥ 50 % of frames within the last 15 seconds.  Brief disappearances (head turn,
-occlusion) don't reset the window.
+Decoupling capture from inference keeps the video smooth at ~30 fps even
+when YOLO inference is slow (5–15 fps on CPU).
 """
 
 from __future__ import annotations
@@ -32,7 +24,7 @@ from utils.detector import CLASS_COLORS_BGR, CLASS_NAMES, Detection
 
 
 def _draw_detections(frame, detections: list[Detection]) -> None:
-    """Draw cached bounding boxes directly onto a frame (in-place)."""
+    """Draw bounding boxes on a frame in-place."""
     for d in detections:
         bgr   = CLASS_COLORS_BGR.get(d.class_id, (180, 180, 180))
         label = f"{d.class_name}  {d.confidence:.0%}"
@@ -54,7 +46,7 @@ def _draw_detections(frame, detections: list[Detection]) -> None:
 
 
 class CameraStream:
-    """Manages capture, inference, and MJPEG server as three daemon threads."""
+    """Manages the capture, inference, and MJPEG server threads."""
 
     def __init__(
         self,
@@ -64,20 +56,17 @@ class CameraStream:
     ):
         self.port = port
 
-        # MJPEG output buffer (encoded JPEG bytes)
         self._out_lock  = threading.Lock()
         self._frame_bytes: bytes | None = None
 
-        # Raw frame shared between capture → inference
         self._raw_lock  = threading.Lock()
-        self._raw_frame = None          # latest BGR frame from camera
+        self._raw_frame = None
 
-        # Detection results shared between inference → capture (drawing)
         self._det_lock  = threading.Lock()
         self._last_dets: list[Detection] = []
 
-        self._running   = False
-        self._detector  = None
+        self._running      = False
+        self._detector     = None
         self._on_cigarette = None
 
         self._tracker = SlidingWindowTracker(
@@ -87,18 +76,12 @@ class CameraStream:
 
         self._server: HTTPServer | None = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     @property
     def running(self) -> bool:
         return self._running
 
     def start(self, cam_index: int, detector, on_cigarette=None) -> bool:
-        """
-        Start all threads.  Returns False if the camera cannot be opened.
-        """
+        """Start all threads. Returns False if the camera cannot be opened."""
         if self._running:
             return True
 
@@ -116,9 +99,7 @@ class CameraStream:
         threading.Thread(
             target=self._capture_loop, args=(int(cam_index),), daemon=True
         ).start()
-        threading.Thread(
-            target=self._inference_loop, daemon=True
-        ).start()
+        threading.Thread(target=self._inference_loop, daemon=True).start()
         self._start_server()
         return True
 
@@ -134,39 +115,33 @@ class CameraStream:
         self._tracker.reset()
 
     def update_conf(self, conf: float) -> None:
-        """Update confidence threshold from the Streamlit sidebar slider."""
         if self._detector is not None:
             self._detector.conf = conf
 
     # ------------------------------------------------------------------
-    # Thread 1 — Capture (runs at camera FPS, ~30 fps)
+    # Thread 1 — Capture
     # ------------------------------------------------------------------
 
     def _capture_loop(self, cam_index: int) -> None:
         cap = cv2.VideoCapture(cam_index)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)    # minimal latency
+        cap.set(cv2.CAP_PROP_BUFFERSIZE,   1)
 
         while self._running:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            # Store raw frame for the inference thread to pick up
             with self._raw_lock:
                 self._raw_frame = frame.copy()
 
-            # Draw the LAST KNOWN detections (from inference thread) on this frame.
-            # Because inference runs in its own thread the boxes may lag by one
-            # inference cycle (~60-200 ms) but the video stays at camera FPS.
             with self._det_lock:
                 dets = list(self._last_dets)
 
             annotated = frame.copy()
             _draw_detections(annotated, dets)
 
-            # Overlay status counters
             n_cig  = sum(1 for d in dets if d.class_id == 0)
             n_like = sum(1 for d in dets if d.class_id == 1)
             ratio  = self._tracker.detection_ratio
@@ -175,26 +150,17 @@ class CameraStream:
                 f"Cigarettes : {n_cig}",
                 f"Cig-like   : {n_like}",
                 f"Conf thresh: {self._detector.conf:.2f}",
-                f"Det ratio  : {ratio:.0%} / 15 s window"
-                if n_cig > 0 else "Det ratio  : --",
+                f"Det ratio  : {ratio:.0%} / 15 s window" if n_cig > 0 else "Det ratio  : --",
             ]
             y = 32
             for line in lines:
-                cv2.putText(
-                    annotated, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.70,
-                    (0, 0, 0), 3, cv2.LINE_AA,
-                )
-                cv2.putText(
-                    annotated, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.70,
-                    (255, 255, 255), 1, cv2.LINE_AA,
-                )
+                cv2.putText(annotated, line, (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.70, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(annotated, line, (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.70, (255, 255, 255), 1, cv2.LINE_AA)
                 y += 30
 
-            _, buf = cv2.imencode(
-                ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80]
-            )
+            _, buf = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
             with self._out_lock:
                 self._frame_bytes = buf.tobytes()
 
@@ -202,7 +168,7 @@ class CameraStream:
         self._running = False
 
     # ------------------------------------------------------------------
-    # Thread 2 — Inference (runs at YOLO speed, typically 5-15 fps on CPU)
+    # Thread 2 — Inference
     # ------------------------------------------------------------------
 
     def _inference_loop(self) -> None:
@@ -214,27 +180,23 @@ class CameraStream:
                 time.sleep(0.01)
                 continue
 
-            # Run YOLO — this is the slow step
             _, dets = self._detector.predict(frame)
 
             with self._det_lock:
                 self._last_dets = dets
 
-            # Sliding-window alert logic
             n_cig = sum(1 for d in dets if d.class_id == 0)
             if self._on_cigarette is not None:
-                should_alert = self._tracker.update(n_cig > 0)
-                if should_alert:
+                if self._tracker.update(n_cig > 0):
                     try:
                         self._on_cigarette(n_cig)
                     except Exception:
                         pass
             else:
-                # Still update tracker so ratio overlay is correct
                 self._tracker.update(n_cig > 0)
 
     # ------------------------------------------------------------------
-    # Thread 3 — MJPEG HTTP server
+    # Thread 3 — MJPEG server
     # ------------------------------------------------------------------
 
     def _start_server(self) -> None:
@@ -243,10 +205,7 @@ class CameraStream:
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
-                self.send_header(
-                    "Content-Type",
-                    "multipart/x-mixed-replace; boundary=frame",
-                )
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                 self.send_header("Cache-Control", "no-cache, no-store")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
@@ -259,12 +218,12 @@ class CameraStream:
                             self.wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
                             self.wfile.write(data)
                             self.wfile.write(b"\r\n")
-                        time.sleep(0.033)   # ~30 fps ceiling
+                        time.sleep(0.033)
                 except (BrokenPipeError, ConnectionResetError):
                     pass
 
             def log_message(self, *args):
-                pass  # silence access logs
+                pass
 
         try:
             self._server = HTTPServer(("localhost", self.port), _Handler)
@@ -272,6 +231,4 @@ class CameraStream:
             self.port += 1
             self._server = HTTPServer(("localhost", self.port), _Handler)
 
-        threading.Thread(
-            target=self._server.serve_forever, daemon=True
-        ).start()
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
